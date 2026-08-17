@@ -5,6 +5,7 @@ node_modules
 *.vsix
 src/test/example-workspace/.vscode
 coverage
+.DS_Store
 
 .jobfile
 src/test/bin/**

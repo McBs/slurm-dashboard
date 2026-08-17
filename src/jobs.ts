@@ -148,6 +148,7 @@ export class JobItem extends vscode.TreeItem {
  */
 export class JobQueueProvider implements vscode.TreeDataProvider<JobItem | InfoItem> {
     private jobItems: JobItem[] = [];
+    private removedJobIds: Set<string> = new Set();
     private autoRefreshTimer: NodeJS.Timeout | null = null;
     private extrapolationTimer: NodeJS.Timeout | null = null;
 
@@ -208,6 +209,7 @@ export class JobQueueProvider implements vscode.TreeDataProvider<JobItem | InfoI
         const shouldPersist: boolean = config.get('job-dashboard.persistJobs', false);
 
         return this.scheduler.getQueue().then(jobs => {
+            jobs = jobs.filter(job => !this.removedJobIds.has(job.id));
             sortJobs(jobs, sortKey);
 
             if (shouldPersist) {
@@ -244,6 +246,7 @@ export class JobQueueProvider implements vscode.TreeDataProvider<JobItem | InfoI
         vscode.commands.registerCommand('job-dashboard.refresh', () => this.refresh());
         vscode.commands.registerCommand('job-dashboard.cancel-all', () => this.cancelAll());
         vscode.commands.registerCommand('job-dashboard.cancel', (jobItem: JobItem) => this.cancel(jobItem));
+        vscode.commands.registerCommand('job-dashboard.remove', (jobItem: JobItem) => this.remove(jobItem));
         vscode.commands.registerCommand('job-dashboard.cancel-and-resubmit', (jobItem: JobItem) =>
             this.cancelAndResubmit(jobItem)
         );
@@ -264,6 +267,17 @@ export class JobQueueProvider implements vscode.TreeDataProvider<JobItem | InfoI
      * Refreshes the job dashboard. Updates all tree elements.
      */
     public async refresh(): Promise<void> {
+        this._onDidChangeTreeData.fire();
+    }
+
+    /**
+     * Removes a job from the dashboard without canceling it in the scheduler.
+     * The job remains hidden when the dashboard refreshes during this extension session.
+     * @param jobItem The job item to remove.
+     */
+    public remove(jobItem: JobItem): void {
+        this.removedJobIds.add(jobItem.job.id);
+        this.jobItems = this.jobItems.filter(item => item.job.id !== jobItem.job.id);
         this._onDidChangeTreeData.fire();
     }
 

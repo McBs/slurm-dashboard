@@ -3,7 +3,7 @@
   "displayName": "Slurm Dashboard",
   "publisher": "danielnichols",
   "description": "A dashboard for the Slurm workload manager.",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "author": {
     "name": "Daniel Nichols",
     "url": "https://cs.umd.edu/~dnicho"
@@ -49,6 +49,11 @@
         "command": "job-dashboard.cancel",
         "title": "Cancel Job",
         "icon": "$(close)"
+      },
+      {
+        "command": "job-dashboard.remove",
+        "title": "Remove Job from List",
+        "icon": "$(trash)"
       },
       {
         "command": "job-dashboard.cancel-and-resubmit",
@@ -160,6 +165,11 @@
           "command": "job-dashboard.show-source",
           "when": "view == job-dashboard && viewItem == jobItem",
           "group": "inline@5"
+        },
+        {
+          "command": "job-dashboard.remove",
+          "when": "view == job-dashboard && viewItem == jobItem",
+          "group": "inline@6"
         },
         {
           "command": "submit-dashboard.submit",

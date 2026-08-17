@@ -356,6 +356,22 @@ suite('jobs.ts tests', () => {
         });
     });
 
+    test('JobQueueProvider :: remove', async () => {
+        await vscode.workspace.getConfiguration('slurm-dashboard').update('job-dashboard.persistJobs', false);
+        const jobQueueProvider = new jobs.JobQueueProvider(new Debug());
+        const children = await jobQueueProvider.getChildren();
+        assert.ok(children);
+        const jobToRemove = children[0];
+        assert.ok(jobToRemove instanceof jobs.JobItem);
+
+        jobQueueProvider.remove(jobToRemove);
+
+        const refreshedChildren = await jobQueueProvider.getChildren();
+        assert.ok(refreshedChildren);
+        assert.strictEqual(refreshedChildren.length, 8);
+        assert.ok(!refreshedChildren.some(item => item instanceof jobs.JobItem && item.job.id === jobToRemove.job.id));
+    });
+
     test('JobQueueProvider :: timers', async function () {
         await vscode.workspace.getConfiguration('slurm-dashboard').update('job-dashboard.refreshInterval', 0.01);
         await vscode.workspace.getConfiguration('slurm-dashboard').update('job-dashboard.extrapolationInterval', 0.01);
@@ -402,6 +418,13 @@ suite('jobs.ts tests', () => {
                 .update('job-dashboard.promptBeforeCancel', false);
             const jobItem = new jobs.JobItem(new Job('1', 'Test Job', 'RUNNING'), false);
             await vscode.commands.executeCommand('job-dashboard.cancel', jobItem);
+        });
+    });
+
+    test('commands :: job-dashboard.remove', async function () {
+        assert.doesNotThrow(async () => {
+            const jobItem = new jobs.JobItem(new Job('1', 'Test Job', 'RUNNING'), false);
+            await vscode.commands.executeCommand('job-dashboard.remove', jobItem);
         });
     });
 

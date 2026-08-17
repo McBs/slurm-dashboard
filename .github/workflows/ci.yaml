@@ -2,10 +2,9 @@ name: CI
 on:
   push:
     branches: [develop]
+    tags: ['v*']
   pull_request:
     branches: [develop]
-  release:
-    types: [created]
 
 jobs:
   test:
@@ -120,13 +119,11 @@ jobs:
       - name: Install Node.js Dependencies
         run: npm ci
       - name: Package
-        run: npm run package
+        run: |
+          npm run package
+          cp slurm-dashboard-*.vsix slurm-dashboard.vsix
       - name: Upload Release Artifact
         uses: softprops/action-gh-release@v3
         with:
           files: '*.vsix'
           fail_on_unmatched_files: true
-      - name: Deploy
-        run: npm run deploy
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
