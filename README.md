@@ -22,6 +22,22 @@ This extension requires Slurm to be on the system where the workspace is
 located. Currently it only works with Slurm, but PBS, BSUB, and Flux support is
 planned.
 
+## Install This Fork on a Remote VS Code Server
+
+Run the following command on the remote host to install or update the latest
+release from this fork:
+
+```bash
+CODE_SERVER="$(find "$HOME/.vscode-server/" -path '*/code-server' -type f | head -n 1)" \
+  && test -n "$CODE_SERVER" \
+  && curl -fL https://github.com/McBs/slurm-dashboard/releases/latest/download/slurm-dashboard.vsix \
+    -o "/tmp/slurm-dashboard-$USER.vsix" \
+  && "$CODE_SERVER" --install-extension "/tmp/slurm-dashboard-$USER.vsix" --force
+```
+
+Reload the remote VS Code window after installation. The command always uses
+the `slurm-dashboard.vsix` asset from the latest GitHub release.
+
 ## Extension Settings
 
 This extension contributes the following settings:
