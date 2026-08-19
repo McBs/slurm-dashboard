@@ -3,7 +3,7 @@
   "displayName": "Slurm Dashboard",
   "publisher": "danielnichols",
   "description": "A dashboard for the Slurm workload manager.",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "author": {
     "name": "Daniel Nichols",
     "url": "https://cs.umd.edu/~dnicho"
@@ -94,6 +94,21 @@
         "command": "submit-dashboard.submit-all",
         "title": "Submit All Jobs",
         "icon": "$(run-all)"
+      },
+      {
+        "command": "submit-dashboard.add-favorite",
+        "title": "Add Job Script to Favorites",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "submit-dashboard.remove-favorite",
+        "title": "Remove Job Script from Favorites",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "favorite-job-scripts-dashboard.refresh",
+        "title": "Refresh Favorite Job Scripts",
+        "icon": "$(sync)"
       }
     ],
     "viewsContainers": {
@@ -114,6 +129,10 @@
         {
           "id": "submit-dashboard",
           "name": "Job Scripts"
+        },
+        {
+          "id": "favorite-job-scripts-dashboard",
+          "name": "Favorite Job Scripts"
         }
       ]
     },
@@ -137,6 +156,11 @@
         {
           "command": "submit-dashboard.submit-all",
           "when": "view == submit-dashboard",
+          "group": "navigation"
+        },
+        {
+          "command": "favorite-job-scripts-dashboard.refresh",
+          "when": "view == favorite-job-scripts-dashboard",
           "group": "navigation"
         }
       ],
@@ -173,11 +197,27 @@
         },
         {
           "command": "submit-dashboard.submit",
-          "when": "view == submit-dashboard",
-          "group": "inline"
+          "when": "view == submit-dashboard || view == favorite-job-scripts-dashboard",
+          "group": "inline@1"
+        },
+        {
+          "command": "submit-dashboard.add-favorite",
+          "when": "view == submit-dashboard && viewItem == jobScript",
+          "group": "inline@2"
+        },
+        {
+          "command": "submit-dashboard.remove-favorite",
+          "when": "(view == submit-dashboard || view == favorite-job-scripts-dashboard) && viewItem == favoriteJobScript",
+          "group": "inline@2"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "favorite-job-scripts-dashboard",
+        "contents": "No favorite job scripts yet.\nAdd one using the star icon in the Job Scripts view."
+      }
+    ],
     "configuration": {
       "title": "Slurm Dashboard",
       "properties": {
@@ -265,6 +305,14 @@
           ],
           "default": "last modified",
           "description": "Sort the job script list by this column. Set to null to leave the order the glob pattern discovered the files. Choices: [\"filename\", \"rel path\", \"last modified\", \"newest\", \"oldest\"] Default: last modified"
+        },
+        "slurm-dashboard.submit-dashboard.archiveDirectory": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": "slurm-job-history",
+          "description": "Workspace-relative directory in which submitted job scripts are copied. The Slurm job ID is appended to each archived filename. Set to null to disable archiving."
         },
         "slurm-dashboard.setJobWorkingDirectoryToScriptDirectory": {
           "type": "boolean",

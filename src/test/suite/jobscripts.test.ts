@@ -19,6 +19,10 @@ suite('jobscripts.ts tests', () => {
             assert.strictEqual(jobScript.collapsibleState, vscode.TreeItemCollapsibleState.None);
             assert.strictEqual(jobScript.tooltip, fpath.toString());
             assert.strictEqual(jobScript.description?.toString().slice(1), 'job1.sbatch');
+            assert.strictEqual(jobScript.contextValue, 'jobScript');
+
+            const favoriteJobScript = new jobscripts.JobScript(fpath, undefined, true);
+            assert.strictEqual(favoriteJobScript.contextValue, 'favoriteJobScript');
         }
     });
 
@@ -53,6 +57,41 @@ suite('jobscripts.ts tests', () => {
         assert.strictEqual(emptyChildren.length, 0);
     });
 
+    test('SubmittedJobScriptArchive :: archive and exclude from scripts', async () => {
+        const configuration = vscode.workspace.getConfiguration('slurm-dashboard');
+        const archiveSetting = 'submit-dashboard.archiveDirectory';
+        const originalArchiveDirectory = configuration.get<string | null>(archiveSetting);
+        const archiveDirectory = 'test-slurm-job-history';
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri;
+        assert.ok(workspaceRoot, 'workspace root not found');
+        const archiveUri = vscode.Uri.joinPath(workspaceRoot, archiveDirectory);
+        const source = vscode.Uri.joinPath(workspaceRoot, 'job1.sbatch');
+
+        try {
+            await configuration.update(archiveSetting, archiveDirectory);
+            const archive = new jobscripts.SubmittedJobScriptArchive();
+            const destination = await archive.archive(source, '12345_7');
+
+            assert.ok(destination, 'job script was not archived');
+            assert.strictEqual(destination.path.endsWith('/test-slurm-job-history/job1_12345_7.sbatch'), true);
+            assert.strictEqual(
+                Buffer.from(await vscode.workspace.fs.readFile(destination)).toString(),
+                Buffer.from(await vscode.workspace.fs.readFile(source)).toString()
+            );
+
+            const provider = new jobscripts.JobScriptProvider(new Debug());
+            const scripts = await provider.getChildren();
+            assert.ok(scripts, 'no scripts found');
+            assert.strictEqual(
+                scripts.some(script => script.fpath.toString() === destination.toString()),
+                false
+            );
+        } finally {
+            await vscode.workspace.fs.delete(archiveUri, { recursive: true, useTrash: false });
+            await configuration.update(archiveSetting, originalArchiveDirectory);
+        }
+    });
+
     test('JobScriptProvider :: register', async () => {
         const extension = vscode.extensions.getExtension('danielnichols.slurm-dashboard');
         assert.ok(extension, 'Extension not found');
@@ -75,7 +114,45 @@ suite('jobscripts.ts tests', () => {
             assert.ok(commands.includes('submit-dashboard.submit-all'));
             assert.ok(commands.includes('submit-dashboard.submit'));
             assert.ok(commands.includes('submit-dashboard.show-source'));
+            assert.ok(commands.includes('submit-dashboard.add-favorite'));
+            assert.ok(commands.includes('submit-dashboard.remove-favorite'));
+            assert.ok(commands.includes('favorite-job-scripts-dashboard.refresh'));
         });
+    });
+
+    test('JobScriptFavorites and FavoriteJobScriptProvider', async () => {
+        const extension = vscode.extensions.getExtension('danielnichols.slurm-dashboard');
+        assert.ok(extension, 'Extension not found');
+        const context = (await extension.activate()) as vscode.ExtensionContext;
+        const originalFavorites = context.workspaceState.get<string[]>(jobscripts.JOB_SCRIPT_FAVORITES_KEY);
+        const scheduler = new Debug();
+        const jobScriptProvider = new jobscripts.JobScriptProvider(scheduler);
+        const scripts = await jobScriptProvider.getChildren();
+        assert.ok(scripts, 'no scripts found');
+        const uri = scripts[0].fpath as vscode.Uri;
+
+        try {
+            await context.workspaceState.update(jobscripts.JOB_SCRIPT_FAVORITES_KEY, []);
+            const favorites = new jobscripts.JobScriptFavorites(context.workspaceState);
+            const favoriteProvider = new jobscripts.FavoriteJobScriptProvider(favorites);
+
+            await favorites.add(uri);
+            await favorites.add(uri);
+            assert.ok(favorites.isFavorite(uri));
+            assert.strictEqual(favorites.getUris().length, 1);
+
+            const favoriteScripts = await favoriteProvider.getChildren();
+            assert.strictEqual(favoriteScripts.length, 1);
+            assert.strictEqual(favoriteScripts[0].fpath.toString(), uri.toString());
+            assert.strictEqual(favoriteScripts[0].contextValue, 'favoriteJobScript');
+            assert.deepStrictEqual(await favoriteProvider.getChildren(favoriteScripts[0]), []);
+
+            await favorites.remove(uri);
+            assert.ok(!favorites.isFavorite(uri));
+            assert.strictEqual((await favoriteProvider.getChildren()).length, 0);
+        } finally {
+            await context.workspaceState.update(jobscripts.JOB_SCRIPT_FAVORITES_KEY, originalFavorites);
+        }
     });
 
     test('sortJobScripts', async () => {
@@ -275,10 +352,34 @@ suite('jobscripts.ts tests', () => {
         const scripts = await provider.getChildren();
         assert.ok(scripts, 'no scripts found');
         assert.strictEqual(scripts.length, 3, 'invalid scripts length');
+        const configuration = vscode.workspace.getConfiguration('slurm-dashboard');
+        const archiveSetting = 'submit-dashboard.archiveDirectory';
+        const originalArchiveDirectory = configuration.get<string | null>(archiveSetting);
+        const archiveDirectory = 'test-submit-archive';
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri;
+        assert.ok(workspaceRoot, 'workspace root not found');
+        const archiveUri = vscode.Uri.joinPath(workspaceRoot, archiveDirectory);
 
-        assert.doesNotThrow(async () => {
+        try {
+            await configuration.update(archiveSetting, archiveDirectory);
             await vscode.commands.executeCommand('submit-dashboard.submit', scripts[0]);
-        });
+            const archivedFiles = await vscode.workspace.fs.readDirectory(archiveUri);
+            const sourceName = getBaseName(scripts[0].fpath);
+            const extensionIndex = sourceName.lastIndexOf('.');
+            const sourceStem = sourceName.slice(0, extensionIndex);
+            const sourceExtension = sourceName.slice(extensionIndex);
+            assert.strictEqual(
+                archivedFiles.some(([name]) => {
+                    const prefix = `${sourceStem}_`;
+                    const jobId = name.slice(prefix.length, -sourceExtension.length);
+                    return name.startsWith(prefix) && name.endsWith(sourceExtension) && /^\d+$/.test(jobId);
+                }),
+                true
+            );
+        } finally {
+            await vscode.workspace.fs.delete(archiveUri, { recursive: true, useTrash: false });
+            await configuration.update(archiveSetting, originalArchiveDirectory);
+        }
     });
 
     test('commands :: show-source', async function () {
@@ -291,5 +392,27 @@ suite('jobscripts.ts tests', () => {
         assert.doesNotThrow(async () => {
             await vscode.commands.executeCommand('submit-dashboard.show-source', scripts[0]);
         });
+    });
+
+    test('commands :: add and remove favorite', async () => {
+        const extension = vscode.extensions.getExtension('danielnichols.slurm-dashboard');
+        assert.ok(extension, 'Extension not found');
+        const context = (await extension.activate()) as vscode.ExtensionContext;
+        const originalFavorites = context.workspaceState.get<string[]>(jobscripts.JOB_SCRIPT_FAVORITES_KEY);
+        const provider = new jobscripts.JobScriptProvider(new Debug());
+        const scripts = await provider.getChildren();
+        assert.ok(scripts, 'no scripts found');
+        const uri = scripts[0].fpath as vscode.Uri;
+
+        try {
+            await context.workspaceState.update(jobscripts.JOB_SCRIPT_FAVORITES_KEY, []);
+            await vscode.commands.executeCommand('submit-dashboard.add-favorite', scripts[0]);
+            assert.deepStrictEqual(context.workspaceState.get(jobscripts.JOB_SCRIPT_FAVORITES_KEY), [uri.toString()]);
+
+            await vscode.commands.executeCommand('submit-dashboard.remove-favorite', scripts[0]);
+            assert.deepStrictEqual(context.workspaceState.get(jobscripts.JOB_SCRIPT_FAVORITES_KEY), []);
+        } finally {
+            await context.workspaceState.update(jobscripts.JOB_SCRIPT_FAVORITES_KEY, originalFavorites);
+        }
     });
 });

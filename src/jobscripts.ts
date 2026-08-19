@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { Scheduler } from './scheduler';
 import { getBaseName, getPathRelativeToWorkspaceRoot } from './fileutilities';
 
@@ -14,17 +15,105 @@ export class JobScript extends vscode.TreeItem {
      */
     constructor(
         public fpath: string | vscode.Uri,
-        public stat?: vscode.FileStat
+        public stat?: vscode.FileStat,
+        isFavorite: boolean = false
     ) {
         super(getBaseName(fpath), vscode.TreeItemCollapsibleState.None);
         this.iconPath = new vscode.ThemeIcon('file-code');
         this.tooltip = fpath.toString();
         this.description = getPathRelativeToWorkspaceRoot(fpath);
+        this.contextValue = isFavorite ? 'favoriteJobScript' : 'jobScript';
         this.command = {
             title: 'Show Source',
             command: 'submit-dashboard.show-source',
             arguments: [this],
         };
+    }
+}
+
+export const JOB_SCRIPT_FAVORITES_KEY = 'submit-dashboard.favoriteJobScripts';
+
+/** Archives submitted job scripts with their Slurm job ID. */
+export class SubmittedJobScriptArchive {
+    public async archive(source: vscode.Uri, jobId: string): Promise<vscode.Uri | undefined> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(source) ?? vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            vscode.window.showWarningMessage(
+                'Job submitted, but its script could not be archived outside a workspace.'
+            );
+            return undefined;
+        }
+
+        const archiveDirectory = vscode.workspace
+            .getConfiguration('slurm-dashboard', source)
+            .get('submit-dashboard.archiveDirectory', 'slurm-job-history');
+        if (!archiveDirectory) {
+            return undefined;
+        }
+
+        const normalizedDirectory = archiveDirectory.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
+        if (
+            path.posix.isAbsolute(normalizedDirectory) ||
+            /^[a-zA-Z]:\//.test(normalizedDirectory) ||
+            normalizedDirectory.split('/').includes('..')
+        ) {
+            vscode.window.showErrorMessage(
+                'Job submitted, but the configured archive directory must be a path inside the workspace.'
+            );
+            return undefined;
+        }
+
+        const archiveUri = vscode.Uri.joinPath(workspaceFolder.uri, normalizedDirectory);
+        const parsedName = path.posix.parse(source.path);
+        const safeJobId = jobId.replace(/[^a-zA-Z0-9_.-]/g, '_');
+        const archivedName = `${parsedName.name}_${safeJobId}${parsedName.ext}`;
+        const destination = vscode.Uri.joinPath(archiveUri, archivedName);
+
+        try {
+            await vscode.workspace.fs.createDirectory(archiveUri);
+            await vscode.workspace.fs.copy(source, destination, { overwrite: false });
+            return destination;
+        } catch (error) {
+            vscode.window.showErrorMessage(
+                `Job ${jobId} was submitted, but its script could not be archived in ${archiveUri.fsPath}.\nError: ${error}`
+            );
+            return undefined;
+        }
+    }
+}
+
+/** Stores the user's favorite job scripts in the current workspace. */
+export class JobScriptFavorites {
+    private _onDidChange = new vscode.EventEmitter<void>();
+    readonly onDidChange = this._onDidChange.event;
+
+    constructor(private workspaceState: vscode.Memento) {}
+
+    public getUris(): vscode.Uri[] {
+        return this.workspaceState.get<string[]>(JOB_SCRIPT_FAVORITES_KEY, []).map(value => vscode.Uri.parse(value));
+    }
+
+    public isFavorite(uri: vscode.Uri): boolean {
+        return this.getUris().some(favorite => favorite.toString() === uri.toString());
+    }
+
+    public async add(uri: vscode.Uri): Promise<void> {
+        if (this.isFavorite(uri)) {
+            return;
+        }
+
+        const favorites = this.getUris().map(favorite => favorite.toString());
+        favorites.push(uri.toString());
+        await this.workspaceState.update(JOB_SCRIPT_FAVORITES_KEY, favorites);
+        this._onDidChange.fire();
+    }
+
+    public async remove(uri: vscode.Uri): Promise<void> {
+        const favorites = this.getUris()
+            .filter(favorite => favorite.toString() !== uri.toString())
+            .map(favorite => favorite.toString());
+        await this.workspaceState.update(JOB_SCRIPT_FAVORITES_KEY, favorites);
+        this._onDidChange.fire();
     }
 }
 
@@ -88,7 +177,10 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
      * for submitting jobs.
      * @param scheduler The scheduler used for submitting jobs.
      */
-    constructor(private scheduler: Scheduler) {}
+    constructor(
+        private scheduler: Scheduler,
+        private favorites?: JobScriptFavorites
+    ) {}
 
     /**
      * Gets the tree item for the specified element.
@@ -136,6 +228,17 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
         return jobScriptPatterns;
     }
 
+    private getArchiveExcludePattern(): string | undefined {
+        const archiveDirectory = vscode.workspace
+            .getConfiguration('slurm-dashboard')
+            .get('submit-dashboard.archiveDirectory', 'slurm-job-history');
+        if (!archiveDirectory) {
+            return undefined;
+        }
+        const normalizedDirectory = archiveDirectory.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
+        return `**/${normalizedDirectory}/**`;
+    }
+
     /**
      * Retrieves all job scripts in the workspace.
      * Searches for job scripts based on the extensions specified by
@@ -145,14 +248,15 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
      */
     private getAllJobScripts(): Promise<JobScript[]> {
         const patterns = this.getJobScriptFilePatterns();
+        const archiveExcludePattern = this.getArchiveExcludePattern();
 
         /* find all files in workspace with job script extensions */
         let foundFiles: PromiseLike<JobScript[]>[] = [];
         patterns.forEach(pattern => {
-            let jobScripts = vscode.workspace.findFiles(pattern).then(uris => {
+            let jobScripts = vscode.workspace.findFiles(pattern, archiveExcludePattern).then(uris => {
                 let stats = uris.map(uri => vscode.workspace.fs.stat(uri));
                 return Promise.all(stats).then(stats => {
-                    return uris.map((uri, i) => new JobScript(uri, stats[i]));
+                    return uris.map((uri, i) => new JobScript(uri, stats[i], this.favorites?.isFavorite(uri)));
                 });
             });
             foundFiles.push(jobScripts);
@@ -173,14 +277,27 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
      * @param context The extension context.
      */
     public register(context: vscode.ExtensionContext): void {
+        this.favorites ??= new JobScriptFavorites(context.workspaceState);
+
         let submitView = vscode.window.registerTreeDataProvider('submit-dashboard', this);
         context.subscriptions.push(submitView);
+        context.subscriptions.push(this.favorites.onDidChange(() => this.refresh()));
 
-        vscode.commands.registerCommand('submit-dashboard.refresh', () => this.refresh());
-        vscode.commands.registerCommand('submit-dashboard.submit-all', () => this.submitAll());
-        vscode.commands.registerCommand('submit-dashboard.submit', (jobScript: JobScript) => this.submit(jobScript));
-        vscode.commands.registerCommand('submit-dashboard.show-source', (jobScript: JobScript) =>
-            this.showSource(jobScript)
+        context.subscriptions.push(
+            vscode.commands.registerCommand('submit-dashboard.refresh', () => this.refresh()),
+            vscode.commands.registerCommand('submit-dashboard.submit-all', () => this.submitAll()),
+            vscode.commands.registerCommand('submit-dashboard.submit', (jobScript: JobScript) =>
+                this.submit(jobScript)
+            ),
+            vscode.commands.registerCommand('submit-dashboard.show-source', (jobScript: JobScript) =>
+                this.showSource(jobScript)
+            ),
+            vscode.commands.registerCommand('submit-dashboard.add-favorite', (jobScript: JobScript) =>
+                this.addFavorite(jobScript)
+            ),
+            vscode.commands.registerCommand('submit-dashboard.remove-favorite', (jobScript: JobScript) =>
+                this.removeFavorite(jobScript)
+            )
         );
     }
 
@@ -199,7 +316,7 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
      * prompts the user before submitting all job scripts.
      * @returns A promise that resolves to true if all job scripts were submitted, false otherwise.
      */
-    private submitAll(): Thenable<boolean> {
+    private async submitAll(): Promise<boolean> {
         const shouldPrompt: boolean = vscode.workspace
             .getConfiguration('slurm-dashboard')
             .get('submit-dashboard.promptBeforeSubmitAll', true);
@@ -207,18 +324,19 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
         if (shouldPrompt) {
             /* c8 ignore start */
             const numJobs = this.jobScripts.length;
-            return vscode.window
-                .showInformationMessage(`Are you sure you want to submit all ${numJobs} jobs?`, 'Yes', 'No')
-                .then(value => {
-                    if (value === 'Yes') {
-                        this.jobScripts.forEach(jobScript => this.submit(jobScript));
-                    }
-                    return value === 'Yes';
-                });
+            const value = await vscode.window.showInformationMessage(
+                `Are you sure you want to submit all ${numJobs} jobs?`,
+                'Yes',
+                'No'
+            );
+            if (value === 'Yes') {
+                await Promise.all(this.jobScripts.map(jobScript => this.submit(jobScript)));
+            }
+            return value === 'Yes';
             /* c8 ignore stop */
         } else {
-            this.jobScripts.forEach(jobScript => this.submit(jobScript));
-            return Promise.resolve(true);
+            await Promise.all(this.jobScripts.map(jobScript => this.submit(jobScript)));
+            return true;
         }
     }
 
@@ -226,8 +344,24 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
      * Submits a job script. Uses the scheduler object to submit the job.
      * @param jobScript The job script to submit.
      */
-    private submit(jobScript: JobScript): void {
-        this.scheduler.submitJob(jobScript.fpath);
+    private async submit(jobScript: JobScript): Promise<void> {
+        const jobId = this.scheduler.submitJob(jobScript.fpath);
+        if (jobId) {
+            const archive = new SubmittedJobScriptArchive();
+            await archive.archive(this.getUri(jobScript), jobId);
+        }
+    }
+
+    private addFavorite(jobScript: JobScript): Promise<void> {
+        return this.favorites!.add(this.getUri(jobScript));
+    }
+
+    private removeFavorite(jobScript: JobScript): Promise<void> {
+        return this.favorites!.remove(this.getUri(jobScript));
+    }
+
+    private getUri(jobScript: JobScript): vscode.Uri {
+        return jobScript.fpath instanceof vscode.Uri ? jobScript.fpath : vscode.Uri.file(jobScript.fpath);
     }
 
     /**
@@ -239,5 +373,52 @@ export class JobScriptProvider implements vscode.TreeDataProvider<JobScript> {
         vscode.workspace.openTextDocument(fpath).then(doc => {
             vscode.window.showTextDocument(doc);
         });
+    }
+}
+
+/** Provides the favorite job scripts tree view. */
+export class FavoriteJobScriptProvider implements vscode.TreeDataProvider<JobScript> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    constructor(private favorites: JobScriptFavorites) {}
+
+    public getTreeItem(element: JobScript): vscode.TreeItem {
+        return element;
+    }
+
+    public async getChildren(element?: JobScript): Promise<JobScript[]> {
+        if (element) {
+            return [];
+        }
+
+        const scripts = await Promise.all(
+            this.favorites.getUris().map(async uri => {
+                try {
+                    const stat = await vscode.workspace.fs.stat(uri);
+                    return new JobScript(uri, stat, true);
+                } catch {
+                    return undefined;
+                }
+            })
+        );
+        const existingScripts = scripts.filter((script): script is JobScript => script !== undefined);
+        const sortKey = vscode.workspace
+            .getConfiguration('slurm-dashboard')
+            .get<string | null>('submit-dashboard.sortBy');
+        sortJobsScripts(existingScripts, sortKey);
+        return existingScripts;
+    }
+
+    public register(context: vscode.ExtensionContext): void {
+        context.subscriptions.push(
+            vscode.window.registerTreeDataProvider('favorite-job-scripts-dashboard', this),
+            this.favorites.onDidChange(() => this.refresh()),
+            vscode.commands.registerCommand('favorite-job-scripts-dashboard.refresh', () => this.refresh())
+        );
+    }
+
+    public refresh(): void {
+        this._onDidChangeTreeData.fire();
     }
 }

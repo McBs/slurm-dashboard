@@ -370,25 +370,27 @@ suite('scheduler.ts tests', () => {
 
         const slurm = new scheduler.SlurmScheduler();
         const queue = await slurm.getQueue();
+        let submittedJobId: string | undefined;
         assert.doesNotThrow(() => {
-            slurm.submitJob(resolvePathRelativeToWorkspace('job1.sbatch'));
+            submittedJobId = slurm.submitJob(resolvePathRelativeToWorkspace('job1.sbatch'));
         });
+        assert.strictEqual(submittedJobId, '123459');
 
         const newQueue = await slurm.getQueue();
         assert.strictEqual(newQueue.length, queue.length + 1);
 
         const jobScriptWithParentheses = 'job(log(kd)=1).sbatch';
+        let parenthesesJobId: string | undefined;
         assert.doesNotThrow(() => {
-            slurm.submitJob(jobScriptWithParentheses);
+            parenthesesJobId = slurm.submitJob(jobScriptWithParentheses);
         });
+        assert.strictEqual(parenthesesJobId, '123460');
 
         const newQueueWithParentheses = await slurm.getQueue();
         assert.strictEqual(newQueueWithParentheses.length, newQueue.length + 1);
         assert.ok(newQueueWithParentheses.some(j => j.batchFile === jobScriptWithParentheses));
 
-        assert.doesNotThrow(() => {
-            slurm.submitJob('not-a-real-file.sh');
-        });
+        assert.strictEqual(slurm.submitJob('not-a-real-file.sh'), '123461');
     });
 
     test('Slurm :: getJobOutputPath', async function () {

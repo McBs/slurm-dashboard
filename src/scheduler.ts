@@ -132,8 +132,9 @@ export interface Scheduler {
     /**
      * Submits a job to the scheduler.
      * @param jobScript - The job script to submit, either as a string or a URI.
+     * @returns The submitted job ID, or undefined when submission fails or no ID is available.
      */
-    submitJob(jobScript: string | vscode.Uri): void;
+    submitJob(jobScript: string | vscode.Uri): string | undefined;
 
     /**
      * Retrieve the output path for a job file. Is permitted to simply return
@@ -248,8 +249,9 @@ export class SlurmScheduler implements Scheduler {
      * @warning This function is likely to silently fail if slurm-dashboard.setJobWorkingDirectoryToScriptDirectory is
      *          set to false. VSCode runs the extension in /tmp by default and most Slurm configurations do not allow
      *          jobs to be submitted from /tmp.
+     * @returns The submitted Slurm job ID, or undefined when submission fails or the ID cannot be parsed.
      */
-    public submitJob(jobScript: string | vscode.Uri): void {
+    public submitJob(jobScript: string | vscode.Uri): string | undefined {
         try {
             const setCWD = vscode.workspace
                 .getConfiguration('slurm-dashboard')
@@ -268,9 +270,21 @@ export class SlurmScheduler implements Scheduler {
                 execOptions['cwd'] = cwd;
             }
 
-            execFileSync('sbatch', [jobScriptPath], execOptions);
+            const output = execFileSync('sbatch', [jobScriptPath], {
+                ...execOptions,
+                encoding: 'utf8',
+            });
+            const match = output.match(/Submitted batch job\s+(\S+)/);
+            if (!match) {
+                vscode.window.showWarningMessage(
+                    `Job submitted, but its job ID could not be determined. No script copy was archived.\nOutput: ${output.trim()}`
+                );
+                return undefined;
+            }
+            return match[1];
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to submit job ${jobScript}.\nError: ${error}`);
+            return undefined;
         }
     }
 
@@ -501,9 +515,11 @@ export class Debug implements Scheduler {
     /**
      * Submits a job for execution. Just shows an information message.
      * @param jobScript - The job script to submit.
+     * @returns Undefined because the debug scheduler does not create a real job ID.
      */
-    public submitJob(jobScript: string | vscode.Uri): void {
+    public submitJob(jobScript: string | vscode.Uri): string | undefined {
         vscode.window.showInformationMessage(`Submit job ${jobScript}`);
+        return undefined;
     }
 
     /**
